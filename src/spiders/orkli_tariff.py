@@ -127,6 +127,7 @@ class OrkliTariffSpider:
             df = pd.DataFrame(
                 columns=[
                     "brand",
+                    
                     "supplier_ref",
                     "normalized_ref",
                     "name",
