@@ -1,6 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
+*.log
+
+.vscode/
+
+data/input/*
+data/index/*
 data/output/images/*
 data/output/pdfs/*
-*.log
+data/output/reports/*
