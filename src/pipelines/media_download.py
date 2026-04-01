@@ -29,25 +29,6 @@ def looks_like_price_only(text: str) -> bool:
     return bool(re.fullmatch(r"\d+[.,]\d+\s*€(?:\s+\d+)?", text))
 
 
-def clean_matched_name(text: str) -> str:
-    text = clean_text(text)
-
-    if looks_like_price_only(text):
-        return ""
-
-    junk_parts = [
-        "Componentes de radiador ACC - Accesorios de unión",
-        "ACC - Accesorios de unión",
-        "Componentes de radiador",
-    ]
-
-    for part in junk_parts:
-        text = text.replace(part, "")
-
-    text = re.sub(r"\s+", " ", text).strip(" -|;,.")
-    return text
-
-
 def infer_doc_kind(pdf_url: str, source_url: str = "") -> str:
     pdf_url = clean_text(pdf_url)
     source_url = clean_text(source_url)
@@ -66,7 +47,7 @@ def infer_doc_kind(pdf_url: str, source_url: str = "") -> str:
     return "none"
 
 
-def run_media_download(df_matches: pd.DataFrame) -> pd.DataFrame:
+def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
     df = df_matches.copy()
 
     for col in [
@@ -95,7 +76,11 @@ def run_media_download(df_matches: pd.DataFrame) -> pd.DataFrame:
 
         input_name = clean_text(row.get("nombre"))
         matched_name = clean_text(row.get("matched_name"))
-        matched_name_clean = clean_matched_name(matched_name)
+
+        matched_name_clean = provider.clean_name(matched_name)
+        matched_name_clean = clean_text(matched_name_clean)
+        if looks_like_price_only(matched_name_clean):
+            matched_name_clean = ""
 
         if input_name:
             ecommerce_name = input_name
