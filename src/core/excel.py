@@ -13,14 +13,15 @@ def load_input_excel(path):
 
     df = df.copy()
     df = df[df["referencia"].notna()]
+
     df["referencia"] = (
         df["referencia"]
         .astype(str)
         .str.strip()
         .str.replace(r"\.0$", "", regex=True)
     )
-    df["nombre"] = df["nombre"].astype(str).str.strip()
 
+    df["nombre"] = df["nombre"].astype(str).str.strip()
     return df
 
 
@@ -34,4 +35,10 @@ def add_result_columns(df):
     df["source_url"] = ""
     df["match_type"] = ""
     df["estado"] = "pendiente"
+
+    # nuevas
+    df["local_image"] = ""
+    df["local_pdf"] = ""
+    df["media_status"] = "pendiente"
+
     return df

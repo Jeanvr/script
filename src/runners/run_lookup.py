@@ -16,8 +16,11 @@ def main():
         INDEX_DIR / "orkli_products.csv",
         dtype=str,
         sep=None,
-        engine="python"
+        engine="python",
+        encoding="utf-8-sig"
     ).fillna("")
+
+    orkli_index.columns = [str(c).replace("\ufeff", "").strip() for c in orkli_index.columns]
 
     print("Columnas índice:")
     print(orkli_index.columns.tolist())
