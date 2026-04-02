@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from html import unescape
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -12,7 +13,6 @@ from src.core.paths import INDEX_DIR
 
 
 CATALOG_URLS = [
-    # mete aquí categorías de Orkli que te interesen
     "https://www.orkli.com/web/confortysalud/hidraulica-calefaccion/-/cat/HID/2GF015/F027/SF032",
 ]
 
@@ -77,7 +77,6 @@ class OrkliCatalogSpider:
         if items:
             return items
 
-        # fallback si la página no viene en tabla
         cards = soup.select("div, li, article")
         for card in cards:
             item = self.parse_card(card, source_url)
@@ -111,7 +110,7 @@ class OrkliCatalogSpider:
             return None
 
         image_url = self.extract_image_url(row, source_url)
-        tech_pdf_url = self.extract_pdf_url(row, source_url)
+        pdf_url = self.extract_pdf_url(row, source_url)
 
         name = self.build_name_from_text(row_text, supplier_ref)
         if not name:
@@ -126,9 +125,9 @@ class OrkliCatalogSpider:
             "short_description": "",
             "category": "catalogo",
             "image_url": image_url,
-            "tech_pdf_url": tech_pdf_url,
+            "pdf_url": pdf_url,
             "source_url": source_url,
-            "doc_status": "tech_pdf_found" if tech_pdf_url else "no_public_ficha",
+            "doc_status": "tech_pdf_found" if pdf_url else "no_public_ficha",
             "source_type": "catalog",
         }
 
@@ -147,7 +146,7 @@ class OrkliCatalogSpider:
             return None
 
         image_url = self.extract_image_url(card, source_url)
-        tech_pdf_url = self.extract_pdf_url(card, source_url)
+        pdf_url = self.extract_pdf_url(card, source_url)
 
         name = self.build_name_from_text(text, supplier_ref)
         if not name:
@@ -162,9 +161,9 @@ class OrkliCatalogSpider:
             "short_description": "",
             "category": "catalogo",
             "image_url": image_url,
-            "tech_pdf_url": tech_pdf_url,
+            "pdf_url": pdf_url,
             "source_url": source_url,
-            "doc_status": "tech_pdf_found" if tech_pdf_url else "no_public_ficha",
+            "doc_status": "tech_pdf_found" if pdf_url else "no_public_ficha",
             "source_type": "catalog",
         }
 
@@ -185,13 +184,40 @@ class OrkliCatalogSpider:
         return ""
 
     def extract_pdf_url(self, node, base_url: str) -> str:
-        for a in node.select("a[href]"):
-            href = (a.get("href") or "").strip()
-            if not href:
-                continue
+        candidates: list[str] = []
 
+        for a in node.select("a[href]"):
+            href = unescape((a.get("href") or "").strip())
+            if href:
+                candidates.append(href)
+
+        raw = unescape(str(node))
+        candidates.extend(re.findall(r'href=["\']([^"\']+)["\']', raw, flags=re.IGNORECASE))
+        candidates.extend(re.findall(r'https?://[^\s"\'>]+', raw, flags=re.IGNORECASE))
+        candidates.extend(
+            re.findall(
+                r'/[^\s"\'>]*(?:p_p_resource_id=documento|p_p_resource_id=documentos|/documents/)[^\s"\'>]*',
+                raw,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        seen = set()
+        unique_candidates = []
+        for href in candidates:
+            if href not in seen:
+                seen.add(href)
+                unique_candidates.append(href)
+
+        for href in unique_candidates:
             full = urljoin(base_url, href)
             low = full.lower()
+
+            if "p_p_resource_id=documentos" in low:
+                continue
+
+            if "p_p_resource_id=documento" in low:
+                return full
 
             if ".pdf" in low or "/documents/" in low:
                 return full
@@ -224,7 +250,7 @@ class OrkliCatalogSpider:
             "short_description",
             "category",
             "image_url",
-            "tech_pdf_url",
+            "pdf_url",
             "source_url",
             "doc_status",
             "source_type",
@@ -233,9 +259,16 @@ class OrkliCatalogSpider:
         if df.empty:
             df = pd.DataFrame(columns=expected_cols)
         else:
+            if "tech_pdf_url" in df.columns and "pdf_url" not in df.columns:
+                df["pdf_url"] = df["tech_pdf_url"]
+
+            if "tech_pdf_url" in df.columns:
+                df = df.drop(columns=["tech_pdf_url"], errors="ignore")
+
             for col in expected_cols:
                 if col not in df.columns:
                     df[col] = ""
+
             df = df[expected_cols]
             df = df.drop_duplicates(subset=["normalized_ref"], keep="first")
 

@@ -2,7 +2,7 @@ import re
 
 import pandas as pd
 
-from src.core.http import download_file, get_extension_from_url
+from src.core.http import download_file, download_pdf_file, get_extension_from_url
 from src.core.paths import IMAGES_DIR, PDFS_DIR
 
 
@@ -26,7 +26,7 @@ def looks_like_price_only(text: str) -> bool:
     text = clean_text(text)
     if not text:
         return True
-    return bool(re.fullmatch(r"\d+[.,]\d+\s*€(?:\s+\d+)?", text))
+    return bool(re.fullmatch(r"\d+[.,]\d+\s*â‚¬(?:\s+\d+)?", text))
 
 
 def infer_doc_kind(pdf_url: str, source_url: str = "") -> str:
@@ -96,12 +96,18 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
         df.loc[idx, "ecommerce_name"] = ecommerce_name
         df.loc[idx, "name_source"] = name_source
 
+        df.loc[idx, "local_image"] = ""
+        df.loc[idx, "local_pdf"] = ""
+        df.loc[idx, "final_image_url"] = ""
+        df.loc[idx, "final_pdf_url"] = ""
+
         if estado != "encontrado":
             df.loc[idx, "media_status"] = "no_encontrado"
             df.loc[idx, "doc_kind"] = "none"
             df.loc[idx, "doc_status"] = "not_matched"
             df.loc[idx, "final_image_url"] = ""
             df.loc[idx, "final_pdf_url"] = ""
+            df.loc[idx, "local_pdf"] = ""
             continue
 
         doc_kind = clean_text(row.get("doc_kind")) or infer_doc_kind(pdf_url, source_url)
@@ -122,6 +128,7 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
 
         image_ok = False
         pdf_ok = False
+        pdf_path = PDFS_DIR / f"{base_name}.pdf"
 
         try:
             if image_url.startswith("http"):
@@ -135,11 +142,21 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
 
         try:
             if doc_kind == "tech_sheet" and pdf_url.startswith("http"):
-                pdf_path = PDFS_DIR / f"{base_name}.pdf"
-                download_file(pdf_url, pdf_path)
+                if pdf_path.exists():
+                    pdf_path.unlink()
+
+                download_pdf_file(pdf_url, pdf_path)
                 df.loc[idx, "local_pdf"] = str(pdf_path)
                 pdf_ok = True
         except Exception as exc:
+            if pdf_path.exists():
+                pdf_path.unlink()
+
+            df.loc[idx, "pdf_url"] = ""
+            df.loc[idx, "final_pdf_url"] = ""
+            df.loc[idx, "local_pdf"] = ""
+            df.loc[idx, "doc_status"] = "invalid_pdf_blocked"
+
             print(f"[PDF ERROR] {matched_ref}: {exc}")
 
         if pdf_ok and image_ok:
