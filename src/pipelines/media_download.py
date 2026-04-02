@@ -26,25 +26,104 @@ def looks_like_price_only(text: str) -> bool:
     text = clean_text(text)
     if not text:
         return True
-    return bool(re.fullmatch(r"\d+[.,]\d+\s*â‚¬(?:\s+\d+)?", text))
+    return bool(re.fullmatch(r"\d+[.,]\d+\s*(?:€|â‚¬)?(?:\s+\d+)?", text))
+
+
+def is_catalog_or_tariff_pdf_url(pdf_url: str, source_url: str = "") -> bool:
+    pdf_url = clean_text(pdf_url)
+    if not pdf_url:
+        return False
+
+    low = pdf_url.lower()
+
+    # URL dinámica real de ficha técnica por producto de Orkli
+    if "p_p_resource_id=documento" in low and "p_p_resource_id=documentos" not in low:
+        return False
+
+    if "_orklicatalogo_war_orkliportlet_referencia=" in low:
+        return False
+
+    # PDFs tipo tarifa / catálogo
+    if "/documents/" in low:
+        keywords = [
+            "tarifa",
+            "repuestos",
+            "catalog",
+            "catalogo",
+            "catálogo",
+            "pvp",
+            "price-list",
+            "price list",
+        ]
+        return any(k in low for k in keywords)
+
+    return False
 
 
 def infer_doc_kind(pdf_url: str, source_url: str = "") -> str:
     pdf_url = clean_text(pdf_url)
-    source_url = clean_text(source_url)
 
     if not pdf_url:
         return "none"
 
-    low = f"{pdf_url} {source_url}".lower()
+    low = pdf_url.lower()
 
-    if "tarifa" in low or "pvp" in low or "price-list" in low or "price list" in low:
-        return "tariff"
+    # Ficha técnica real por producto
+    if "p_p_resource_id=documento" in low and "p_p_resource_id=documentos" not in low:
+        return "tech_sheet"
 
+    if "_orklicatalogo_war_orkliportlet_referencia=" in low:
+        return "tech_sheet"
+
+    # Catálogo / tarifa
+    if is_catalog_or_tariff_pdf_url(pdf_url, source_url):
+        return "catalog_pdf"
+
+    # Cualquier otro PDF público no identificado como tarifa
     if pdf_url.startswith("http"):
         return "tech_sheet"
 
     return "none"
+
+
+def finalize_media_fields(row: dict) -> dict:
+    pdf_url = clean_text(row.get("pdf_url"))
+    local_pdf = clean_text(row.get("local_pdf"))
+    local_image = clean_text(row.get("local_image"))
+    current_doc_status = clean_text(row.get("doc_status"))
+    source_url = clean_text(row.get("source_url"))
+
+    has_pdf_url = bool(pdf_url)
+    has_local_pdf = bool(local_pdf)
+    has_local_image = bool(local_image)
+    is_catalog_pdf = has_pdf_url and is_catalog_or_tariff_pdf_url(pdf_url, source_url)
+
+    if has_local_pdf:
+        row["doc_kind"] = "tech_sheet"
+        row["doc_status"] = "public_tech_doc_found"
+    elif current_doc_status == "invalid_pdf_blocked":
+        row["doc_kind"] = "none"
+        row["doc_status"] = "invalid_pdf_blocked"
+    elif is_catalog_pdf:
+        row["doc_kind"] = "catalog_pdf"
+        row["doc_status"] = "catalog_pdf_only"
+    else:
+        row["doc_kind"] = "none"
+        row["doc_status"] = "no_public_tech_doc"
+
+    if has_local_image and has_local_pdf:
+        row["media_status"] = "pdf_e_imagen"
+    elif has_local_pdf:
+        row["media_status"] = "solo_pdf"
+    elif has_local_image:
+        row["media_status"] = "solo_imagen"
+    elif is_catalog_pdf:
+        row["media_status"] = "catalogo_sin_descarga"
+    else:
+        row["media_status"] = "sin_media"
+
+    row["final_pdf_url"] = pdf_url if has_local_pdf else ""
+    return row
 
 
 def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
@@ -98,7 +177,7 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
 
         df.loc[idx, "local_image"] = ""
         df.loc[idx, "local_pdf"] = ""
-        df.loc[idx, "final_image_url"] = ""
+        df.loc[idx, "final_image_url"] = image_url if image_url.startswith("http") else ""
         df.loc[idx, "final_pdf_url"] = ""
 
         if estado != "encontrado":
@@ -111,23 +190,20 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
             continue
 
         doc_kind = clean_text(row.get("doc_kind")) or infer_doc_kind(pdf_url, source_url)
-
-        if doc_kind == "tariff":
-            doc_status = "no_public_tech_doc"
-        elif doc_kind == "tech_sheet":
-            doc_status = "public_tech_doc_found"
-        else:
-            doc_status = "no_public_tech_doc"
-
         df.loc[idx, "doc_kind"] = doc_kind
-        df.loc[idx, "doc_status"] = doc_status
-        df.loc[idx, "final_image_url"] = image_url if image_url.startswith("http") else ""
-        df.loc[idx, "final_pdf_url"] = pdf_url if doc_kind == "tech_sheet" else ""
+
+        if doc_kind == "tech_sheet":
+            df.loc[idx, "doc_status"] = "public_tech_doc_found"
+            df.loc[idx, "final_pdf_url"] = pdf_url if pdf_url.startswith("http") else ""
+        elif doc_kind == "catalog_pdf":
+            df.loc[idx, "doc_status"] = "catalog_pdf_only"
+            df.loc[idx, "final_pdf_url"] = ""
+        else:
+            df.loc[idx, "doc_status"] = "no_public_tech_doc"
+            df.loc[idx, "final_pdf_url"] = ""
 
         base_name = safe_name(f"{brand}_{matched_ref}" if brand else matched_ref)
 
-        image_ok = False
-        pdf_ok = False
         pdf_path = PDFS_DIR / f"{base_name}.pdf"
 
         try:
@@ -136,7 +212,6 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
                 img_path = IMAGES_DIR / f"{base_name}{ext}"
                 download_file(image_url, img_path)
                 df.loc[idx, "local_image"] = str(img_path)
-                image_ok = True
         except Exception as exc:
             print(f"[IMG ERROR] {matched_ref}: {exc}")
 
@@ -147,7 +222,6 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
 
                 download_pdf_file(pdf_url, pdf_path)
                 df.loc[idx, "local_pdf"] = str(pdf_path)
-                pdf_ok = True
         except Exception as exc:
             if pdf_path.exists():
                 pdf_path.unlink()
@@ -159,17 +233,11 @@ def run_media_download(df_matches: pd.DataFrame, provider) -> pd.DataFrame:
 
             print(f"[PDF ERROR] {matched_ref}: {exc}")
 
-        if pdf_ok and image_ok:
-            df.loc[idx, "media_status"] = "pdf_e_imagen"
-        elif pdf_ok:
-            df.loc[idx, "media_status"] = "solo_pdf"
-        elif image_ok and doc_kind == "tariff":
-            df.loc[idx, "media_status"] = "solo_imagen_tarifa_descartada"
-        elif image_ok:
-            df.loc[idx, "media_status"] = "solo_imagen"
-        elif doc_kind == "tariff":
-            df.loc[idx, "media_status"] = "tarifa_descartada"
-        else:
-            df.loc[idx, "media_status"] = "sin_media_publica"
+        row_result = df.loc[idx].to_dict()
+        row_result = finalize_media_fields(row_result)
+
+        for key, value in row_result.items():
+            if key in df.columns:
+                df.loc[idx, key] = value
 
     return df
